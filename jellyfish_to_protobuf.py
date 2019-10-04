@@ -1,12 +1,53 @@
 import re
 
-def format_single(field_name):
+y_n = {"Y": "Yes", "N": "No"}
+ENUMS = {
+    "ActiveAccount": y_n,
+    "AvgDaysToPayDesc":{
+      "00": "Average Days to Pay from Invoice Date", 
+      "01": "Average Days to Pay from Due Date", 
+      "02": "Weighted Average Days from Invoice Date",
+      "03": "Weighted Average Days from Due Date",
+      "04": "Other Average Days"
+      },
+    "BusinessLevel": {
+        "Global Ultimate": "Global Ultimate",
+        "Domestic Ultimate": "Domestic Ultimate",
+        "Immediate Parent": "Immediate Parent",
+        "Headquarters": "Headquarters",
+        "Branch": "Branch",
+        "Subsidiary": "Subsidiary",
+        "Single Location": "Single Location"
+      }
+    }
+
+def style_field_name(field_name):
   s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', field_name)
   s1 = re.sub('([0-9])([a-z])', r'\1_\2', s1)
   s1 = re.sub('([a-z])([0-9])', r'\1_\2', s1)
   return re.sub('([a-z])([A-Z])', r'\1_\2', s1).lower()
 
-def is_verified_string_field(message_name, field_name):
+def format_single(field_name):
+  return field_name + " " + style_field_name(field_name)
+
+def is_num(message_name, field_name):
+  if field_name == "value" or "num_" in field_name or \
+    "percent" in field_name or field_name.startswith("count_") or \
+    field_name.startswith("years_") or field_name.startswith("number_"):
+    return True
+  
+  elif field_name in ["avg_days_to_pay", "new_non_charge_off_del", "dbt", "recent_dbt"]:
+    return True
+  
+  return False
+
+def is_enum(field_name):
+  if field_name in ENUMS.keys():
+    return True
+  return False
+
+
+def is_string(message_name, field_name):
   string_fields = [
     "Initials.value",
     "LocationDescription.value",
@@ -31,33 +72,35 @@ def is_verified_string_field(message_name, field_name):
       return True
   return False
 
-def format_leaf(field_name, message_name):
-  field_name = format_single(field_name)
+def format_leaf(field_name, message_name, index):
+  if is_enum(field_name):
+    enums = "\n".join(["    " + ENUMS[field_name][e].upper().replace(" ", "_") + " = " + str(idx + 1) + ";" for idx, e in enumerate(ENUMS[field_name].keys())])
+    return """enum {} {{
+{}
+  }}
+  {} {} = {};""".format(field_name, enums, field_name, style_field_name(field_name), index)
 
   # make string default type
+  field_name = style_field_name(field_name)
   pb_type = "string"
-  
-  if is_verified_string_field(message_name, field_name):
+  if is_string(message_name, field_name):
     return pb_type + " " + field_name
 
-  elif field_name == "value" or \
-    "num_" in field_name or \
-    field_name.startswith("count_") or \
-    field_name.startswith("years_") or \
-    field_name.startswith("number_"):
-
+  elif is_num(message_name, field_name):
     pb_type = "int64"
+
+  elif "date" in field_name:
+    pb_type = "nav.Date"
   
-  return pb_type + " " + field_name
+  return pb_type + " " + field_name + " = " + str(index) + ";"
 
 def format_repeated(field_name):
-  field_name = format_single(field_name)
   if field_name.endswith("s"):
-    return field_name
-  return field_name + "s"
+    return "repeated " + field_name + " " + style_field_name(field_name)
+  return "repeated " + field_name + " " + style_field_name(field_name) + "s"
 
-def format_repeated_leaf(field_name, message_name):
-  field_name = format_leaf(field_name, message_name)
+def format_repeated_leaf(field_name, message_name, index):
+  field_name = format_leaf(field_name, message_name, index)
   return format_repeated(field_name)
 
 def read_jellyfish_output(filename):
@@ -105,20 +148,27 @@ def write_top_level(top_level_objs, f):
       field = field.replace("\n", "")
 
     if repeated and leaf: # I don't think we have any of these yet
-      root_fields += "\n  repeated string {} = {};".format(format_repeated_leaf(field, "x"), idx + 5)
+      root_fields += "\n  {}".format(format_repeated_leaf(field, "x", idx + 1))
     elif repeated and not leaf:
-      root_fields += "\n  repeated {} {} = {};".format(field, format_repeated(field), idx + 5)
+      root_fields += "\n  {} = {};".format(format_repeated(field), idx + 1)
     elif not repeated and leaf:
-      root_fields += "\n  string {} = {};".format(format_leaf(field, "x"), idx + 5)
+      root_fields += "\n {}".format(format_leaf(field, "x", idx + 1))
     elif not repeated and not leaf:
-      root_fields += "\n  {} {} = {};".format(field, format_single(field), idx + 5)
+      root_fields += "\n  {} = {};".format(format_single(field), idx + 1)
 
   # write top-level report message
-  root_object = """message ReportResponse {{
-    nav.Header header = 1;
-    google.protobuf.Timestamp created_at = 3;
-    string uuid = 4;{}
-  }}\n""".format(root_fields)
+  root_object = """syntax = "proto3";\npackage nav.equifax.reports.business;
+
+import "nav/date.proto";
+
+message ReportResponse {{
+  nav.Header header = 1;
+  Report report = 2;
+  google.protobuf.Timestamp created_at = 3;
+  string uuid = 4;
+}}
+message Report {{{}
+}}\n""".format(root_fields)
   f.write(root_object)
 
 def write_sub_messages(unique_messages, f):
@@ -141,13 +191,13 @@ def write_sub_messages(unique_messages, f):
 
       # generate the appropriate code to represent the field
       if leaf and repeated:
-        fields += "\n  repeated {} = {};".format(format_repeated_leaf(field, m), idx + 1)
+        fields += "\n  {}".format(format_repeated_leaf(field, m, idx + 1))
       elif leaf and not repeated:
-        fields += "\n  {} = {};".format(format_leaf(field, m), idx + 1)
+        fields += "\n  {}".format(format_leaf(field, m, idx + 1))
       elif not leaf and repeated:
-        fields += "\n  repeated {} {} = {};".format(field, format_repeated(field), idx + 1)
+        fields += "\n  {} = {};".format(format_repeated(field), idx + 1)
       elif not leaf and not repeated:
-        fields += "\n  {} {} = {};".format(field, format_single(field), idx + 1)
+        fields += "\n  {} = {};".format(format_single(field), idx + 1)
 
 
     obj = "message {} {{{}\n}}\n".format(m.replace("[]", ""), fields)
@@ -156,6 +206,7 @@ def write_sub_messages(unique_messages, f):
 
 def main():
   # use filename to point to file with jellyfish data
+  # TODO use different file name
   filename = "/Users/grant/Repos/protorepo/nav/pudge/reports/equifax/business_v2_editor.proto"
   unique_messages, top_level_objs = read_jellyfish_output(filename)
 
@@ -166,3 +217,26 @@ def main():
 
 if __name__ == "__main__":
   main()
+
+
+# todo, write enums first in the file and also update string fields 
+# that should be enums to be the new enum type
+# 
+# example enum
+# enum RegistrationState {
+#   UNKNOWN_REGISTRATION_STATE = 0;
+#   CREATED = 1;
+#   DECLINED = 2;
+#   CANCELED = 3;
+# };
+
+# message RegistrationStatus {
+#   RegistrationState state = 1;
+#   string duns = 2;
+# }
+
+# for key, value := range personMap {
+#   fmt.Println("index : ", key, " value : ", value)
+# }
+
+# endswith "_ind" seem always to be Y/N enums
