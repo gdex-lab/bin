@@ -1,0 +1,45 @@
+#!/bin/bash
+# Script to retrieve the pg_dump file (including contents) from a remote server (such as an integration server)
+​
+RESTORE=false
+SUCCESS=false
+​
+for arg in "$@"
+do
+	if [ "$arg" == "--restore" ];
+	then
+		RESTORE=true
+	fi
+done
+​
+if ! $RESTORE;
+then
+	echo -e "\nEnter REMOTE DB...\n"
+	read -p "URL: " URL
+	read -p "Name: " remoteDBName
+	read -p "Username: " remoteUsername
+	read -p "Enter local dump location: " localFile
+​
+	if  pg_dump -v -h $URL -Fc -o -U $remoteUsername $remoteDBName > $localFile;
+	then
+		SUCCESS=true
+		echo -e "\n...\npg_dump succeeded. Moving into restore.\n...\n"
+	else
+		SUCCESS=false
+		echo -e "\n...\nERROR: pg_dump failed! No restorable file created.\n...\n"
+	fi
+fi
+​
+if $RESTORE || $SUCCESS;
+then
+	echo -e "\nEnter LOCAL DB...\n"
+	read -p "Name: " localName
+	read -p "Username: " localUsername
+	
+	if pg_restore -v -U $localUsername --dbname=$localName $localFile;
+	then
+		echo -e "\n...\nOPERATION COMPLETE\n...\n"
+	else
+		echo -e "\n...\nERROR: pg_restore failed! Restorable file exists, but did not propagate into a local db.\n...\n"
+	fi
+fi
